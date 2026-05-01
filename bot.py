@@ -5,7 +5,7 @@ import threading
 import os
 import sqlite3
 
-BOT_TOKEN = "8770137480:AAFE6WOePbgvdKcqy8_pq3k9KhgrGTgfer4"
+BOT_TOKEN = "8770137480:AAHHnW_qo65bZaCyw8vAY93UdUWWVTKdT_k"
 ADMIN_ID = 2039785960
 
 # ================= DATABASE =================
@@ -38,7 +38,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await update.message.reply_text("Registration successful!")
 
-# ✅ admin function আলাদা করে লিখতে হবে
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -60,7 +59,7 @@ def home():
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    app_web.run(host="0.0.0.0", port=port)
+    app_web.run(host="0.0.0.0", port=port, use_reloader=False)  # 🔥 important
 
 # ================= RUN =================
 if __name__ == "__main__":
@@ -70,4 +69,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
 
-    app.run_polling()
+    app.run_polling(close_loop=False)  # 🔥 important
