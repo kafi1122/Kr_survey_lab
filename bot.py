@@ -56,3 +56,15 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.run_polling()
+    ADMIN_ID = 2039785960  # এখানে তোমার user id বসাও
+    async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if user.id != ADMIN_ID:
+        await update.message.reply_text("You are not admin!")
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    await update.message.reply_text(f"Total Users: {total_users}")
