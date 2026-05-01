@@ -22,22 +22,32 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
-# add subscription columns safely
-try:
-    cursor.execute("ALTER TABLE users ADD COLUMN plan TEXT")
-except:
-    pass
-
-try:
-    cursor.execute("ALTER TABLE users ADD COLUMN expire_date TEXT")
-except:
-    pass
+# add columns safely
+for column, col_type in [
+    ("plan", "TEXT"),
+    ("expire_date", "TEXT"),
+    ("last_ip_time", "TEXT"),
+    ("current_ip", "TEXT")
+]:
+    try:
+        cursor.execute(f"ALTER TABLE users ADD COLUMN {column} {col_type}")
+    except:
+        pass
 
 # IP table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS ips (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT
+)
+""")
+
+# IP usage table
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS ip_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT,
+    user_id INTEGER
 )
 """)
 
@@ -60,42 +70,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await update.message.reply_text("Registration successful!")
 
-# 🔥 USER ID COMMAND
+# USER ID
 async def id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your ID: {update.effective_user.id}")
 
-# ================= ADMIN =================
+# ADMIN
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    if user.id != ADMIN_ID:
+    if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("You are not admin!")
         return
 
     cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
+    total = cursor.fetchone()[0]
+    await update.message.reply_text(f"Total Users: {total}")
 
-    await update.message.reply_text(f"Total Users: {total_users}")
-
-# ================= SET PLAN =================
+# SET PLAN
 async def setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    if user.id != ADMIN_ID:
+    if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("You are not admin!")
         return
 
     try:
-        target_id = int(context.args[0])
+        uid = int(context.args[0])
         plan = context.args[1]
 
-        if plan == "weekly":
-            days = 7
-        elif plan == "15days":
-            days = 15
-        elif plan == "monthly":
-            days = 30
-        else:
+        days = {"weekly":7, "15days":15, "monthly":30}.get(plan)
+        if not days:
             await update.message.reply_text("Invalid plan!")
             return
 
@@ -103,20 +103,19 @@ async def setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         cursor.execute(
             "UPDATE users SET plan=?, expire_date=? WHERE user_id=?",
-            (plan, expire.strftime("%Y-%m-%d %H:%M:%S"), target_id)
+            (plan, expire.strftime("%Y-%m-%d %H:%M:%S"), uid)
         )
         conn.commit()
 
-        await update.message.reply_text(f"Plan set for {target_id}: {plan}")
-
+        await update.message.reply_text(f"Plan set: {plan}")
     except:
         await update.message.reply_text("Usage: /setplan user_id plan")
 
-# ================= USER PLAN =================
+# MY PLAN
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    uid = update.effective_user.id
 
-    cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (user.id,))
+    cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (uid,))
     data = cursor.fetchone()
 
     if data and data[0]:
@@ -124,11 +123,9 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("No active subscription!")
 
-# ================= ADD IP =================
+# ADD IP
 async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    if user.id != ADMIN_ID:
+    if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("You are not admin!")
         return
 
@@ -136,34 +133,69 @@ async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ip = context.args[0]
         cursor.execute("INSERT INTO ips (ip) VALUES (?)", (ip,))
         conn.commit()
-
         await update.message.reply_text(f"IP Added: {ip}")
     except:
         await update.message.reply_text("Usage: /addip ip:port")
 
-# ================= GET IP =================
+# 🔥 ADVANCED GET IP
 async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (user.id,))
+    cursor.execute("SELECT plan, expire_date, last_ip_time, current_ip FROM users WHERE user_id=?", (user.id,))
     data = cursor.fetchone()
 
     if not data or not data[0]:
         await update.message.reply_text("No active subscription!")
         return
 
-    expire_date = datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S")
-    if datetime.now() > expire_date:
+    # expire check
+    expire = datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S")
+    if datetime.now() > expire:
         await update.message.reply_text("Subscription expired!")
         return
 
-    cursor.execute("SELECT ip FROM ips ORDER BY RANDOM() LIMIT 1")
-    ip = cursor.fetchone()
+    last_time = data[2]
+    current_ip = data[3]
 
-    if ip:
-        await update.message.reply_text(f"Your IP: {ip[0]}")
-    else:
+    # ⏳ 2-day rule
+    if last_time:
+        last_time = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S")
+        if datetime.now() - last_time < timedelta(days=2):
+            await update.message.reply_text(
+                f"You already have IP:\n{current_ip}\n\nChange after 2 days."
+            )
+            return
+
+    # find IP (max 3 users per IP)
+    cursor.execute("SELECT ip FROM ips")
+    ips = cursor.fetchall()
+
+    selected_ip = None
+
+    for ip_row in ips:
+        ip = ip_row[0]
+        cursor.execute("SELECT COUNT(*) FROM ip_usage WHERE ip=?", (ip,))
+        count = cursor.fetchone()[0]
+
+        if count < 3:
+            selected_ip = ip
+            break
+
+    if not selected_ip:
         await update.message.reply_text("No IP available!")
+        return
+
+    # assign
+    cursor.execute("INSERT INTO ip_usage (ip, user_id) VALUES (?, ?)", (selected_ip, user.id))
+
+    cursor.execute(
+        "UPDATE users SET last_ip_time=?, current_ip=? WHERE user_id=?",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_ip, user.id)
+    )
+
+    conn.commit()
+
+    await update.message.reply_text(f"Your New IP:\n{selected_ip}")
 
 # ================= FLASK =================
 app_web = Flask(__name__)
