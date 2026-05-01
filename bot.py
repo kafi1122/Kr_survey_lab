@@ -1,3 +1,4 @@
+ADMIN_ID = 2039785960  # এখানে তোমার user id বসাও
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from flask import Flask
@@ -56,7 +57,6 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.run_polling()
-    ADMIN_ID = 2039785960  # এখানে তোমার user id বসাও
     async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -68,3 +68,4 @@ if __name__ == "__main__":
     total_users = cursor.fetchone()[0]
 
     await update.message.reply_text(f"Total Users: {total_users}")
+    app.add_handler(CommandHandler("admin", admin))
