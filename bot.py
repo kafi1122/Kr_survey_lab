@@ -1,4 +1,3 @@
-ADMIN_ID = 2039785960  # এখানে তোমার user id বসাও
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from flask import Flask
@@ -7,7 +6,7 @@ import os
 import sqlite3
 
 BOT_TOKEN = "8770137480:AAFE6WOePbgvdKcqy8_pq3k9KhgrGTgfer4"
-
+ADMIN_ID = 2039785960  # এখানে তোমার user id বসাও
 # ================= DATABASE =================
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -38,6 +37,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
         await update.message.reply_text("Registration successful!")
+        async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if user.id != ADMIN_ID:
+        await update.message.reply_text("You are not admin!")
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    await update.message.reply_text(f"Total Users: {total_users}")
 
 # ================= FLASK =================
 app_web = Flask(__name__)
@@ -56,16 +66,5 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.run_polling()
-    async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    if user.id != ADMIN_ID:
-        await update.message.reply_text("You are not admin!")
-        return
-
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
-
-    await update.message.reply_text(f"Total Users: {total_users}")
     app.add_handler(CommandHandler("admin", admin))
+    app.run_polling()
