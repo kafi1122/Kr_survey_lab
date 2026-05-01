@@ -3,14 +3,42 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from flask import Flask
 import threading
 import os
+import sqlite3
 
 BOT_TOKEN = "8770137480:AAFE6WOePbgvdKcqy8_pq3k9KhgrGTgfer4"
 
-# Telegram bot
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot is running!")
+# ================= DATABASE =================
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
 
-# Flask app (port keep alive)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    join_date TEXT
+)
+""")
+conn.commit()
+
+# ================= TELEGRAM =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    # check user exists
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
+    data = cursor.fetchone()
+
+    if data:
+        await update.message.reply_text("Welcome back!")
+    else:
+        cursor.execute(
+            "INSERT INTO users (user_id, username, join_date) VALUES (?, ?, datetime('now'))",
+            (user.id, user.username)
+        )
+        conn.commit()
+        await update.message.reply_text("Registration successful!")
+
+# ================= FLASK =================
 app_web = Flask(__name__)
 
 @app_web.route('/')
@@ -21,11 +49,10 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     app_web.run(host="0.0.0.0", port=port)
 
+# ================= RUN =================
 if __name__ == "__main__":
-    # Flask background এ চালাও
     threading.Thread(target=run_web).start()
 
-    # Bot main thread এ চালাও (IMPORTANT)
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.run_polling()
