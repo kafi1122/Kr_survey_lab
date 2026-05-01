@@ -6,7 +6,8 @@ import os
 import sqlite3
 
 BOT_TOKEN = "8770137480:AAFE6WOePbgvdKcqy8_pq3k9KhgrGTgfer4"
-ADMIN_ID = 2039785960  # এখানে তোমার user id বসাও
+ADMIN_ID = 2039785960
+
 # ================= DATABASE =================
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -24,7 +25,6 @@ conn.commit()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # check user exists
     cursor.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
     data = cursor.fetchone()
 
@@ -37,7 +37,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
         await update.message.reply_text("Registration successful!")
-        async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# ✅ admin function আলাদা করে লিখতে হবে
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     if user.id != ADMIN_ID:
@@ -67,4 +69,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
+
     app.run_polling()
