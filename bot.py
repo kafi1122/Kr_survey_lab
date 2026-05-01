@@ -60,6 +60,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await update.message.reply_text("Registration successful!")
 
+# 🔥 USER ID COMMAND
+async def id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Your ID: {update.effective_user.id}")
+
 # ================= ADMIN =================
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -141,7 +145,6 @@ async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # check subscription
     cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (user.id,))
     data = cursor.fetchone()
 
@@ -149,13 +152,11 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No active subscription!")
         return
 
-    # check expiry
     expire_date = datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S")
     if datetime.now() > expire_date:
         await update.message.reply_text("Subscription expired!")
         return
 
-    # get random IP
     cursor.execute("SELECT ip FROM ips ORDER BY RANDOM() LIMIT 1")
     ip = cursor.fetchone()
 
@@ -182,6 +183,7 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("id", id))
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CommandHandler("setplan", setplan))
     app.add_handler(CommandHandler("myplan", myplan))
