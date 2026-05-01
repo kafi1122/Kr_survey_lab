@@ -13,6 +13,7 @@ ADMIN_ID = 2039785960
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# users table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -20,9 +21,8 @@ CREATE TABLE IF NOT EXISTS users (
     join_date TEXT
 )
 """)
-conn.commit()
 
-# 🔥 Add new columns safely
+# add subscription columns safely
 try:
     cursor.execute("ALTER TABLE users ADD COLUMN plan TEXT")
 except:
@@ -32,6 +32,14 @@ try:
     cursor.execute("ALTER TABLE users ADD COLUMN expire_date TEXT")
 except:
     pass
+
+# IP table
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS ips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT
+)
+""")
 
 conn.commit()
 
@@ -112,6 +120,50 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("No active subscription!")
 
+# ================= ADD IP =================
+async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if user.id != ADMIN_ID:
+        await update.message.reply_text("You are not admin!")
+        return
+
+    try:
+        ip = context.args[0]
+        cursor.execute("INSERT INTO ips (ip) VALUES (?)", (ip,))
+        conn.commit()
+
+        await update.message.reply_text(f"IP Added: {ip}")
+    except:
+        await update.message.reply_text("Usage: /addip ip:port")
+
+# ================= GET IP =================
+async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    # check subscription
+    cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (user.id,))
+    data = cursor.fetchone()
+
+    if not data or not data[0]:
+        await update.message.reply_text("No active subscription!")
+        return
+
+    # check expiry
+    expire_date = datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S")
+    if datetime.now() > expire_date:
+        await update.message.reply_text("Subscription expired!")
+        return
+
+    # get random IP
+    cursor.execute("SELECT ip FROM ips ORDER BY RANDOM() LIMIT 1")
+    ip = cursor.fetchone()
+
+    if ip:
+        await update.message.reply_text(f"Your IP: {ip[0]}")
+    else:
+        await update.message.reply_text("No IP available!")
+
 # ================= FLASK =================
 app_web = Flask(__name__)
 
@@ -133,5 +185,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CommandHandler("setplan", setplan))
     app.add_handler(CommandHandler("myplan", myplan))
+    app.add_handler(CommandHandler("addip", addip))
+    app.add_handler(CommandHandler("getip", getip))
 
     app.run_polling(close_loop=False)
