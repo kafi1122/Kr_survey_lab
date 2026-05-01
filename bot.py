@@ -4,7 +4,7 @@ from flask import Flask
 import asyncio
 import threading
 
-BOT_TOKEN = "8770137480:AAF4R4lCzUZHD2VDMi_47K8iQINZ_TCiXIc"
+BOT_TOKEN = "8770137480:AAFE6WOePbgvdKcqy8_pq3k9KhgrGTgfer4"
 
 # Telegram bot
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
