@@ -1,5 +1,5 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from flask import Flask
 import threading
 import os
@@ -14,7 +14,6 @@ ADMIN_ID = 2039785960
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# users table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -23,7 +22,6 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
-# add columns safely
 for column, col_type in [
     ("plan", "TEXT"),
     ("expire_date", "TEXT"),
@@ -35,7 +33,6 @@ for column, col_type in [
     except:
         pass
 
-# IP tables
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS ips (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +50,19 @@ CREATE TABLE IF NOT EXISTS ip_usage (
 
 conn.commit()
 
+# ================= MENU =================
+def user_menu():
+    return ReplyKeyboardMarkup([
+        ["📊 My Plan", "🌐 Get IP"],
+        ["💰 Buy Plan", "🆔 My ID"]
+    ], resize_keyboard=True)
+
+def admin_menu():
+    return ReplyKeyboardMarkup([
+        ["👥 Total Users", "📋 IP List"],
+        ["➕ Add IP", "❌ Remove IP"]
+    ], resize_keyboard=True)
+
 # ================= TELEGRAM =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -60,15 +70,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
     data = cursor.fetchone()
 
-    if data:
-        await update.message.reply_text("Welcome back!")
-    else:
+    if not data:
         cursor.execute(
             "INSERT INTO users (user_id, username, join_date) VALUES (?, ?, datetime('now'))",
             (user.id, user.username)
         )
         conn.commit()
-        await update.message.reply_text("Registration successful!")
+        text = "Registration successful!"
+    else:
+        text = "Welcome back!"
+
+    if user.id == ADMIN_ID:
+        await update.message.reply_text(text, reply_markup=admin_menu())
+    else:
+        await update.message.reply_text(text, reply_markup=user_menu())
 
 async def id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your ID: {update.effective_user.id}")
@@ -86,7 +101,6 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= SUBSCRIPTION =================
 async def setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not admin!")
         return
 
     try:
@@ -123,36 +137,31 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= PAYMENT =================
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = """💰 Subscription Plans:
-
-Weekly (7 days) - 100৳
+    await update.message.reply_text(
+"""💰 Subscription Plans:
+Weekly - 100৳
 15 Days - 180৳
-Monthly (30 days) - 300৳
+Monthly - 300৳
 
-📲 Payment Method:
-Bkash / Nagad
+📲 Payment: Bkash / Nagad
+Send screenshot to admin."""
+    )
 
-Send screenshot after payment to admin."""
-    await update.message.reply_text(text)
-
-# ================= IP MANAGEMENT =================
+# ================= IP =================
 async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not admin!")
         return
-
     try:
         ip = context.args[0]
         cursor.execute("INSERT INTO ips (ip) VALUES (?)", (ip,))
         conn.commit()
-        await update.message.reply_text(f"IP Added: {ip}")
+        await update.message.reply_text(f"Added: {ip}")
     except:
         await update.message.reply_text("Usage: /addip ip:port")
 
 async def removeip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-
     try:
         ip = context.args[0]
         cursor.execute("DELETE FROM ips WHERE ip=?", (ip,))
@@ -163,16 +172,13 @@ async def removeip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def listip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT ip FROM ips")
-    ips = cursor.fetchall()
+    data = cursor.fetchall()
+    if not data:
+        await update.message.reply_text("No IPs!")
+    else:
+        await update.message.reply_text("\n".join([i[0] for i in data]))
 
-    if not ips:
-        await update.message.reply_text("No IPs found!")
-        return
-
-    text = "\n".join([i[0] for i in ips])
-    await update.message.reply_text(f"IP List:\n{text}")
-
-# ================= ADVANCED GET IP =================
+# ================= GET IP =================
 async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -188,62 +194,75 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Subscription expired!")
         return
 
-    last_time = data[2]
-    current_ip = data[3]
-
-    if last_time:
-        last_time = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S")
-        if datetime.now() - last_time < timedelta(days=2):
-            await update.message.reply_text(
-                f"You already have IP:\n{current_ip}\n\nChange after 2 days."
-            )
+    if data[2]:
+        last = datetime.strptime(data[2], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() - last < timedelta(days=2):
+            await update.message.reply_text(f"IP:\n{data[3]}\nChange after 2 days.")
             return
 
     cursor.execute("SELECT ip FROM ips")
     ips = cursor.fetchall()
 
-    selected_ip = None
-
-    for ip_row in ips:
-        ip = ip_row[0]
+    selected = None
+    for i in ips:
+        ip = i[0]
         cursor.execute("SELECT COUNT(*) FROM ip_usage WHERE ip=?", (ip,))
-        count = cursor.fetchone()[0]
-
-        if count < 3:
-            selected_ip = ip
+        if cursor.fetchone()[0] < 3:
+            selected = ip
             break
 
-    if not selected_ip:
+    if not selected:
         await update.message.reply_text("No IP available!")
         return
 
-    cursor.execute("INSERT INTO ip_usage (ip, user_id) VALUES (?, ?)", (selected_ip, user.id))
-
+    cursor.execute("INSERT INTO ip_usage (ip, user_id) VALUES (?, ?)", (selected, user.id))
     cursor.execute(
         "UPDATE users SET last_ip_time=?, current_ip=? WHERE user_id=?",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_ip, user.id)
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected, user.id)
     )
-
     conn.commit()
 
-    await update.message.reply_text(f"Your New IP:\n{selected_ip}")
+    await update.message.reply_text(f"Your IP:\n{selected}")
 
-# ================= EXPIRY CHECK =================
+# ================= BUTTON HANDLER =================
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "📊 My Plan":
+        await myplan(update, context)
+    elif text == "🌐 Get IP":
+        await getip(update, context)
+    elif text == "💰 Buy Plan":
+        await buy(update, context)
+    elif text == "🆔 My ID":
+        await id(update, context)
+    elif text == "👥 Total Users":
+        await admin(update, context)
+    elif text == "📋 IP List":
+        await listip(update, context)
+    elif text == "➕ Add IP":
+        await update.message.reply_text("Use: /addip ip:port")
+    elif text == "❌ Remove IP":
+        await update.message.reply_text("Use: /removeip ip")
+
+# ================= EXPIRY TASK =================
 async def check_expiry(app):
     while True:
         cursor.execute("SELECT user_id, expire_date FROM users WHERE expire_date IS NOT NULL")
         users = cursor.fetchall()
 
         for uid, exp in users:
-            expire_time = datetime.strptime(exp, "%Y-%m-%d %H:%M:%S")
-
-            if 0 < (expire_time - datetime.now()).days <= 1:
-                try:
-                    await app.bot.send_message(uid, "⚠️ Your subscription will expire soon!")
-                except:
-                    pass
+            try:
+                expire_time = datetime.strptime(exp, "%Y-%m-%d %H:%M:%S")
+                if 0 < (expire_time - datetime.now()).days <= 1:
+                    await app.bot.send_message(uid, "⚠️ Expiring soon!")
+            except:
+                continue
 
         await asyncio.sleep(3600)
+
+async def on_startup(app):
+    asyncio.create_task(check_expiry(app))
 
 # ================= FLASK =================
 app_web = Flask(__name__)
@@ -260,7 +279,7 @@ def run_web():
 if __name__ == "__main__":
     threading.Thread(target=run_web).start()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(on_startup).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", id))
@@ -272,8 +291,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("removeip", removeip))
     app.add_handler(CommandHandler("listip", listip))
     app.add_handler(CommandHandler("getip", getip))
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(check_expiry(app))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling(close_loop=False)
