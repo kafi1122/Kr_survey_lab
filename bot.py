@@ -31,27 +31,29 @@ CREATE TABLE IF NOT EXISTS payments (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS ips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT
+)
+""")
+
 conn.commit()
 
 # ================= MENUS =================
 def user_menu():
-    return ReplyKeyboardMarkup(
-        [
-            ["📊 My Plan", "🌐 Get IP"],
-            ["💰 Buy Plan", "💸 Paid"],
-            ["🆔 My ID"]
-        ],
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup([
+        ["📊 My Plan", "🌐 Get IP"],
+        ["💰 Buy Plan", "💸 Paid"],
+        ["🆔 My ID"]
+    ], resize_keyboard=True)
 
 def admin_menu():
-    return ReplyKeyboardMarkup(
-        [
-            ["👥 Total Users"],
-            ["💰 Pending Payments"]
-        ],
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup([
+        ["👥 Total Users", "💰 Pending Payments"],
+        ["➕ Add IP", "❌ Remove IP"],
+        ["📋 IP List"]
+    ], resize_keyboard=True)
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -65,7 +67,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
 
-    # ✅ FORCE MENU SHOW
     if user.id == ADMIN_ID:
         await update.message.reply_text("👑 Admin Panel", reply_markup=admin_menu())
     else:
@@ -90,7 +91,7 @@ Weekly - 100৳
 Monthly - 300৳
 
 📲 Payment: Bkash / Nagad
-👉 Pay then press 💸 Paid button"""
+👉 Pay then press 💸 Paid"""
     )
 
 async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,7 +155,67 @@ async def approve_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(uid, f"✅ Approved! Plan: {plan}")
     await query.edit_message_text(f"Approved user {uid} ({plan})")
 
-# ================= BUTTON HANDLER =================
+# ================= IP SYSTEM =================
+async def add_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send IP like:\n/addip 10.10.10.10:1000")
+
+async def addip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    try:
+        ip = context.args[0]
+        cursor.execute("INSERT INTO ips (ip) VALUES (?)", (ip,))
+        conn.commit()
+        await update.message.reply_text(f"✅ IP Added: {ip}")
+    except:
+        await update.message.reply_text("Usage: /addip ip:port")
+
+async def remove_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send IP like:\n/removeip 10.10.10.10:1000")
+
+async def removeip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    try:
+        ip = context.args[0]
+        cursor.execute("DELETE FROM ips WHERE ip=?", (ip,))
+        conn.commit()
+        await update.message.reply_text(f"❌ Removed: {ip}")
+    except:
+        await update.message.reply_text("Usage: /removeip ip")
+
+async def list_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cursor.execute("SELECT ip FROM ips")
+    ips = cursor.fetchall()
+
+    if not ips:
+        await update.message.reply_text("No IP found!")
+    else:
+        text = "\n".join([i[0] for i in ips])
+        await update.message.reply_text(f"📋 IP List:\n{text}")
+
+# ================= GET IP =================
+async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    cursor.execute("SELECT plan FROM users WHERE user_id=?", (uid,))
+    data = cursor.fetchone()
+
+    if not data or not data[0]:
+        await update.message.reply_text("No active subscription!")
+        return
+
+    cursor.execute("SELECT ip FROM ips")
+    ip = cursor.fetchone()
+
+    if ip:
+        await update.message.reply_text(f"Your IP:\n{ip[0]}")
+    else:
+        await update.message.reply_text("No IP available!")
+
+# ================= MESSAGE HANDLER =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     uid = update.effective_user.id
@@ -163,7 +224,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await myplan(update, context)
 
     elif text == "🌐 Get IP":
-        await update.message.reply_text("IP system working")
+        await getip(update, context)
 
     elif text == "💰 Buy Plan":
         await buy(update, context)
@@ -174,11 +235,21 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🆔 My ID":
         await update.message.reply_text(f"Your ID: {uid}")
 
+    # ADMIN BUTTONS
     elif text == "👥 Total Users" and uid == ADMIN_ID:
         await total_users(update, context)
 
     elif text == "💰 Pending Payments" and uid == ADMIN_ID:
         await pending(update, context)
+
+    elif text == "➕ Add IP" and uid == ADMIN_ID:
+        await add_ip(update, context)
+
+    elif text == "❌ Remove IP" and uid == ADMIN_ID:
+        await remove_ip(update, context)
+
+    elif text == "📋 IP List" and uid == ADMIN_ID:
+        await list_ip(update, context)
 
 # ================= FLASK =================
 app_web = Flask(__name__)
@@ -197,7 +268,10 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))  # 🔥 IMPORTANT
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("addip", addip_cmd))
+    app.add_handler(CommandHandler("removeip", removeip_cmd))
+
     app.add_handler(CallbackQueryHandler(approve_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
