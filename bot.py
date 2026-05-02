@@ -1,5 +1,5 @@
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from flask import Flask
 import threading
 import os
@@ -33,19 +33,25 @@ CREATE TABLE IF NOT EXISTS payments (
 
 conn.commit()
 
-# ================= MENU =================
+# ================= MENUS =================
 def user_menu():
-    return ReplyKeyboardMarkup([
-        ["📊 My Plan", "🌐 Get IP"],
-        ["💰 Buy Plan", "💸 Paid"],
-        ["🆔 My ID"]
-    ], resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        [
+            ["📊 My Plan", "🌐 Get IP"],
+            ["💰 Buy Plan", "💸 Paid"],
+            ["🆔 My ID"]
+        ],
+        resize_keyboard=True
+    )
 
 def admin_menu():
-    return ReplyKeyboardMarkup([
-        ["👥 Total Users"],
-        ["💰 Pending Payments"]
-    ], resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        [
+            ["👥 Total Users"],
+            ["💰 Pending Payments"]
+        ],
+        resize_keyboard=True
+    )
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,13 +65,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
 
+    # ✅ FORCE MENU SHOW
     if user.id == ADMIN_ID:
-        await update.message.reply_text("Admin Panel", reply_markup=admin_menu())
+        await update.message.reply_text("👑 Admin Panel", reply_markup=admin_menu())
     else:
-        await update.message.reply_text("Welcome!", reply_markup=user_menu())
+        await update.message.reply_text("👤 User Panel", reply_markup=user_menu())
 
 # ================= USER =================
-async def myplan(update: Update):
+async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (uid,))
     data = cursor.fetchone()
@@ -75,7 +82,7 @@ async def myplan(update: Update):
     else:
         await update.message.reply_text("No active subscription!")
 
-async def buy(update: Update):
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
 """💰 Subscription Plans:
 Weekly - 100৳
@@ -83,13 +90,12 @@ Weekly - 100৳
 Monthly - 300৳
 
 📲 Payment: Bkash / Nagad
-Then click 💸 Paid"""
+👉 Pay then press 💸 Paid button"""
     )
 
-async def paid(update: Update):
+async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
-    # duplicate avoid
     cursor.execute("SELECT * FROM payments WHERE user_id=? AND status='pending'", (uid,))
     if cursor.fetchone():
         await update.message.reply_text("Already submitted!")
@@ -98,15 +104,15 @@ async def paid(update: Update):
     cursor.execute("INSERT INTO payments (user_id, status) VALUES (?, 'pending')", (uid,))
     conn.commit()
 
-    await update.message.reply_text("✅ Payment submitted!")
+    await update.message.reply_text("✅ Payment request sent to admin!")
 
 # ================= ADMIN =================
-async def total_users(update: Update):
+async def total_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT COUNT(*) FROM users")
     total = cursor.fetchone()[0]
     await update.message.reply_text(f"Total Users: {total}")
 
-async def pending(update: Update):
+async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("SELECT user_id FROM payments WHERE status='pending'")
     users = cursor.fetchall()
 
@@ -118,14 +124,14 @@ async def pending(update: Update):
         uid = u[0]
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Weekly", callback_data=f"approve|{uid}|weekly")],
-            [InlineKeyboardButton("15 Days", callback_data=f"approve|{uid}|15days")],
-            [InlineKeyboardButton("Monthly", callback_data=f"approve|{uid}|monthly")]
+            [InlineKeyboardButton("Approve Weekly", callback_data=f"approve|{uid}|weekly")],
+            [InlineKeyboardButton("Approve 15 Days", callback_data=f"approve|{uid}|15days")],
+            [InlineKeyboardButton("Approve Monthly", callback_data=f"approve|{uid}|monthly")]
         ])
 
         await update.message.reply_text(f"User ID: {uid}", reply_markup=keyboard)
 
-# ================= APPROVE BUTTON =================
+# ================= APPROVE =================
 async def approve_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -148,36 +154,31 @@ async def approve_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(uid, f"✅ Approved! Plan: {plan}")
     await query.edit_message_text(f"Approved user {uid} ({plan})")
 
-# ================= MESSAGE HANDLER =================
+# ================= BUTTON HANDLER =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
 
-    if text == "/start":
-        await start(update, context)
-
-    elif text == "📊 My Plan":
-        await myplan(update)
+    if text == "📊 My Plan":
+        await myplan(update, context)
 
     elif text == "🌐 Get IP":
         await update.message.reply_text("IP system working")
 
     elif text == "💰 Buy Plan":
-        await buy(update)
+        await buy(update, context)
 
     elif text == "💸 Paid":
-        await paid(update)
+        await paid(update, context)
 
     elif text == "🆔 My ID":
-        await update.message.reply_text(f"Your ID: {user_id}")
+        await update.message.reply_text(f"Your ID: {uid}")
 
-    elif text == "👥 Total Users":
-        if user_id == ADMIN_ID:
-            await total_users(update)
+    elif text == "👥 Total Users" and uid == ADMIN_ID:
+        await total_users(update, context)
 
-    elif text == "💰 Pending Payments":
-        if user_id == ADMIN_ID:
-            await pending(update)
+    elif text == "💰 Pending Payments" and uid == ADMIN_ID:
+        await pending(update, context)
 
 # ================= FLASK =================
 app_web = Flask(__name__)
@@ -196,6 +197,7 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    app.add_handler(CommandHandler("start", start))  # 🔥 IMPORTANT
     app.add_handler(CallbackQueryHandler(approve_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
