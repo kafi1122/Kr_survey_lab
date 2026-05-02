@@ -54,7 +54,8 @@ conn.commit()
 def user_menu():
     return ReplyKeyboardMarkup([
         ["📊 My Plan", "🌐 Get IP"],
-        ["💰 Buy Plan", "🆔 My ID"]
+        ["💰 Buy Plan", "💸 I Paid"],
+        ["🆔 My ID"]
     ], resize_keyboard=True)
 
 def admin_menu():
@@ -91,15 +92,41 @@ async def id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= ADMIN =================
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not admin!")
         return
 
     cursor.execute("SELECT COUNT(*) FROM users")
     total = cursor.fetchone()[0]
     await update.message.reply_text(f"Total Users: {total}")
 
-# ================= SUBSCRIPTION =================
-async def setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= PAYMENT =================
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+"""💰 Subscription Plans:
+Weekly - 100৳
+15 Days - 180৳
+Monthly - 300৳
+
+📲 Payment: Bkash / Nagad
+Send screenshot then press '💸 I Paid'."""
+    )
+
+async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    msg = f"""
+💸 Payment Request
+
+User: @{user.username}
+ID: {user.id}
+
+Approve with:
+/approve {user.id} weekly
+"""
+
+    await context.bot.send_message(ADMIN_ID, msg)
+    await update.message.reply_text("✅ Payment request sent. Wait for admin approval.")
+
+async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
@@ -108,6 +135,7 @@ async def setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = context.args[1]
 
         days = {"weekly":7, "15days":15, "monthly":30}.get(plan)
+
         if not days:
             await update.message.reply_text("Invalid plan!")
             return
@@ -120,10 +148,13 @@ async def setplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
 
-        await update.message.reply_text(f"Plan set: {plan}")
-    except:
-        await update.message.reply_text("Usage: /setplan user_id plan")
+        await context.bot.send_message(uid, f"✅ Payment Approved!\nPlan: {plan}")
+        await update.message.reply_text("User approved!")
 
+    except:
+        await update.message.reply_text("Usage: /approve user_id plan")
+
+# ================= SUBSCRIPTION =================
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
@@ -134,18 +165,6 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Plan: {data[0]}\nExpire: {data[1]}")
     else:
         await update.message.reply_text("No active subscription!")
-
-# ================= PAYMENT =================
-async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-"""💰 Subscription Plans:
-Weekly - 100৳
-15 Days - 180৳
-Monthly - 300৳
-
-📲 Payment: Bkash / Nagad
-Send screenshot to admin."""
-    )
 
 # ================= IP =================
 async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -224,7 +243,7 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Your IP:\n{selected}")
 
-# ================= BUTTON HANDLER =================
+# ================= BUTTON =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
@@ -234,6 +253,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await getip(update, context)
     elif text == "💰 Buy Plan":
         await buy(update, context)
+    elif text == "💸 I Paid":
+        await paid(update, context)
     elif text == "🆔 My ID":
         await id(update, context)
     elif text == "👥 Total Users":
@@ -245,7 +266,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "❌ Remove IP":
         await update.message.reply_text("Use: /removeip ip")
 
-# ================= EXPIRY TASK =================
+# ================= EXPIRY =================
 async def check_expiry(app):
     while True:
         cursor.execute("SELECT user_id, expire_date FROM users WHERE expire_date IS NOT NULL")
@@ -284,9 +305,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", id))
     app.add_handler(CommandHandler("admin", admin))
-    app.add_handler(CommandHandler("setplan", setplan))
+    app.add_handler(CommandHandler("approve", approve))
     app.add_handler(CommandHandler("myplan", myplan))
     app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("paid", paid))
     app.add_handler(CommandHandler("addip", addip))
     app.add_handler(CommandHandler("removeip", removeip))
     app.add_handler(CommandHandler("listip", listip))
