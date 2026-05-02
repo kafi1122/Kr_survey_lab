@@ -75,13 +75,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= USER =================
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+
     cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (uid,))
     data = cursor.fetchone()
 
-    if data and data[0]:
-        await update.message.reply_text(f"Plan: {data[0]}\nExpire: {data[1]}")
-    else:
+    if not data or not data[0] or not data[1]:
         await update.message.reply_text("No active subscription!")
+        return
+
+    expire = datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S")
+
+    if datetime.now() > expire:
+        await update.message.reply_text("Subscription expired!")
+        return
+
+    await update.message.reply_text(f"Plan: {data[0]}\nExpire: {data[1]}")
+
+async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (uid,))
+    data = cursor.fetchone()
+
+    if not data or not data[0] or not data[1]:
+        await update.message.reply_text("No active subscription!")
+        return
+
+    expire = datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S")
+
+    if datetime.now() > expire:
+        await update.message.reply_text("Subscription expired!")
+        return
+
+    cursor.execute("SELECT ip FROM ips")
+    ip = cursor.fetchone()
+
+    if ip:
+        await update.message.reply_text(f"Your IP:\n{ip[0]}")
+    else:
+        await update.message.reply_text("No IP available!")
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -144,20 +176,29 @@ async def approve_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     days = {"weekly":7, "15days":15, "monthly":30}[plan]
     expire = datetime.now() + timedelta(days=days)
 
+    # 🔥 CRITICAL FIX
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (uid,))
+    if not cursor.fetchone():
+        await query.edit_message_text("User not found!")
+        return
+
     cursor.execute(
         "UPDATE users SET plan=?, expire_date=? WHERE user_id=?",
         (plan, expire.strftime("%Y-%m-%d %H:%M:%S"), uid)
     )
 
+    conn.commit()
+
+    # payment update
     cursor.execute("UPDATE payments SET status='approved' WHERE user_id=?", (uid,))
     conn.commit()
 
     await context.bot.send_message(uid, f"✅ Approved! Plan: {plan}")
     await query.edit_message_text(f"Approved user {uid} ({plan})")
 
-# ================= IP SYSTEM =================
+# ================= IP =================
 async def add_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send IP like:\n/addip 10.10.10.10:1000")
+    await update.message.reply_text("Send: /addip ip:port")
 
 async def addip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -167,12 +208,12 @@ async def addip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ip = context.args[0]
         cursor.execute("INSERT INTO ips (ip) VALUES (?)", (ip,))
         conn.commit()
-        await update.message.reply_text(f"✅ IP Added: {ip}")
+        await update.message.reply_text(f"IP Added: {ip}")
     except:
         await update.message.reply_text("Usage: /addip ip:port")
 
 async def remove_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send IP like:\n/removeip 10.10.10.10:1000")
+    await update.message.reply_text("Send: /removeip ip")
 
 async def removeip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -182,7 +223,7 @@ async def removeip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ip = context.args[0]
         cursor.execute("DELETE FROM ips WHERE ip=?", (ip,))
         conn.commit()
-        await update.message.reply_text(f"❌ Removed: {ip}")
+        await update.message.reply_text(f"Removed: {ip}")
     except:
         await update.message.reply_text("Usage: /removeip ip")
 
@@ -193,29 +234,9 @@ async def list_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ips:
         await update.message.reply_text("No IP found!")
     else:
-        text = "\n".join([i[0] for i in ips])
-        await update.message.reply_text(f"📋 IP List:\n{text}")
+        await update.message.reply_text("\n".join([i[0] for i in ips]))
 
-# ================= GET IP =================
-async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-
-    cursor.execute("SELECT plan FROM users WHERE user_id=?", (uid,))
-    data = cursor.fetchone()
-
-    if not data or not data[0]:
-        await update.message.reply_text("No active subscription!")
-        return
-
-    cursor.execute("SELECT ip FROM ips")
-    ip = cursor.fetchone()
-
-    if ip:
-        await update.message.reply_text(f"Your IP:\n{ip[0]}")
-    else:
-        await update.message.reply_text("No IP available!")
-
-# ================= MESSAGE HANDLER =================
+# ================= HANDLER =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     uid = update.effective_user.id
@@ -235,7 +256,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🆔 My ID":
         await update.message.reply_text(f"Your ID: {uid}")
 
-    # ADMIN BUTTONS
     elif text == "👥 Total Users" and uid == ADMIN_ID:
         await total_users(update, context)
 
