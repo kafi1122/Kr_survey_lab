@@ -15,6 +15,9 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ========= TEMP STATE =========
+user_states = {}
+
 # ========= KEYBOARDS =========
 user_kb = ReplyKeyboardMarkup([
     ["📦 My Plan", "🌐 Get IP"],
@@ -52,9 +55,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("Registration successful!", reply_markup=user_kb)
 
-# ========= MY ID =========
+# ========= BASIC =========
 async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your ID: {update.effective_user.id}")
+
+async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute()
+
+    if not data.data:
+        return
+
+    user = data.data[0]
+
+    if not user["plan"]:
+        await update.message.reply_text("No active subscription!")
+        return
+
+    await update.message.reply_text(f"Plan: {user['plan']}\nExpire: {user['expire_date']}")
+
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("""💰 Subscription Plans:
+
+Weekly - 100৳
+15 Days - 180৳
+Monthly - 300৳
+
+📲 Payment: Bkash / Nagad
+Send payment & contact admin.""")
 
 # ========= ADMIN =========
 async def total_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -71,64 +98,13 @@ async def paid_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("users").select("*").neq("plan", None).execute()
     await update.message.reply_text(f"Paid Users: {len(data.data)}", reply_markup=admin_kb)
 
-# ========= PLAN =========
-async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute()
-
-    if not data.data:
-        return
-
-    user = data.data[0]
-
-    if not user["plan"]:
-        await update.message.reply_text("No active subscription!")
-        return
-
-    await update.message.reply_text(f"Plan: {user['plan']}\nExpire: {user['expire_date']}")
-
-# ========= BUY =========
-async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""💰 Subscription Plans:
-
-Weekly - 100৳
-15 Days - 180৳
-Monthly - 300৳
-
-📲 Payment: Bkash / Nagad
-Send payment & contact admin.""")
-
-# ========= ADD IP =========
-async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    try:
-        ip = context.args[0]
-        supabase.table("ips").insert({"ip": ip}).execute()
-        await update.message.reply_text(f"Added: {ip}")
-    except:
-        await update.message.reply_text("Usage: /addip ip:port")
-
-# ========= REMOVE IP =========
-async def removeip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    try:
-        ip = context.args[0]
-        supabase.table("ips").delete().eq("ip", ip).execute()
-        await update.message.reply_text(f"Removed: {ip}")
-    except:
-        await update.message.reply_text("Usage: /removeip ip")
-
-# ========= LIST IP =========
+# ========= IP =========
 async def listip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("ips").select("*").execute()
     ips = [i["ip"] for i in data.data]
 
     await update.message.reply_text("\n".join(ips) if ips else "No IP")
 
-# ========= GET IP =========
 async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -194,7 +170,25 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========= BUTTON HANDLER =========
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    uid = update.effective_user.id
 
+    # ===== STATE HANDLING =====
+    if uid in user_states:
+        state = user_states[uid]
+
+        if state == "add_ip":
+            supabase.table("ips").insert({"ip": text}).execute()
+            await update.message.reply_text(f"IP Added: {text}", reply_markup=admin_kb)
+            user_states.pop(uid)
+            return
+
+        elif state == "remove_ip":
+            supabase.table("ips").delete().eq("ip", text).execute()
+            await update.message.reply_text(f"IP Removed: {text}", reply_markup=admin_kb)
+            user_states.pop(uid)
+            return
+
+    # ===== NORMAL BUTTON =====
     if text == "📦 My Plan":
         await myplan(update, context)
 
@@ -219,6 +213,20 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "📜 IP List":
         await listip(update, context)
 
+    elif text == "➕ Add IP":
+        if uid == ADMIN_ID:
+            user_states[uid] = "add_ip"
+            await update.message.reply_text("Send IP (example: 1.1.1.1:8080)")
+        else:
+            await update.message.reply_text("Not allowed")
+
+    elif text == "➖ Remove IP":
+        if uid == ADMIN_ID:
+            user_states[uid] = "remove_ip"
+            await update.message.reply_text("Send IP to remove")
+        else:
+            await update.message.reply_text("Not allowed")
+
     else:
         await update.message.reply_text("Invalid option")
 
@@ -240,9 +248,6 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addip", addip))
-    app.add_handler(CommandHandler("removeip", removeip))
-
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
     app.run_polling()
