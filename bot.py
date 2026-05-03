@@ -1,5 +1,6 @@
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import CommandHandler
 from flask import Flask
 import threading
 import os
@@ -15,9 +16,6 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ========= STATE =========
-user_states = {}
-
 # ========= KEYBOARDS =========
 user_kb = ReplyKeyboardMarkup([
     ["📦 My Plan", "🌐 Get IP"],
@@ -27,8 +25,9 @@ user_kb = ReplyKeyboardMarkup([
 
 admin_kb = ReplyKeyboardMarkup([
     ["👥 Total Users", "💰 Paid Users"],
+    ["📥 Pending Payments"],
     ["➕ Add IP", "➖ Remove IP"],
-    ["📜 IP List", "📥 Pending Payments"]
+    ["📜 IP List"]
 ], resize_keyboard=True)
 
 # ========= START =========
@@ -42,18 +41,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Welcome Admin", reply_markup=admin_kb)
         else:
             await update.message.reply_text("Welcome back!", reply_markup=user_kb)
-    else:
-        supabase.table("users").insert({
-            "user_id": user.id,
-            "username": user.username,
-            "plan": None,
-            "expire_date": None,
-            "week_start": None,
-            "ip_count": 0,
-            "current_ip": None
-        }).execute()
+        return
 
-        await update.message.reply_text("Registration successful!", reply_markup=user_kb)
+    # new user insert
+    supabase.table("users").insert({
+        "user_id": user.id,
+        "username": user.username,
+        "plan": None,
+        "expire_date": None
+    }).execute()
+
+    await update.message.reply_text("Registration successful!", reply_markup=user_kb)
 
 # ========= BASIC =========
 async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -61,15 +59,12 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute()
-    if not data.data:
-        return
 
-    user = data.data[0]
-
-    if not user["plan"]:
+    if not data.data or not data.data[0]["plan"]:
         await update.message.reply_text("No active subscription!")
         return
 
+    user = data.data[0]
     await update.message.reply_text(f"Plan: {user['plan']}\nExpire: {user['expire_date']}")
 
 # ========= BUY =========
@@ -88,7 +83,13 @@ After payment press 💸 I Paid""")
 async def mark_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # add to pending table
+    # check duplicate request
+    existing = supabase.table("payments").select("*").eq("user_id", user.id).execute()
+
+    if existing.data:
+        await update.message.reply_text("Already requested! Wait for admin approval.")
+        return
+
     supabase.table("payments").insert({
         "user_id": user.id,
         "username": user.username
@@ -96,16 +97,13 @@ async def mark_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Payment request sent to admin!")
 
-    # notify admin
-    try:
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"💸 New Payment Request\nUser ID: {user.id}"
-        )
-    except:
-        pass
+    await context.bot.send_message(
+        ADMIN_ID,
+        f"💸 New Payment\nUser ID: {user.id}"
+    )
 
-async def pending_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ========= ADMIN =========
+async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("payments").select("*").execute()
 
     if not data.data:
@@ -116,8 +114,7 @@ async def pending_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in data.data:
         text += f"{u['user_id']}\n"
 
-    text += "\nUse: /approve user_id plan"
-
+    text += "\nApprove with:\n/approve user_id weekly"
     await update.message.reply_text(text)
 
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,7 +125,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = int(context.args[0])
         plan = context.args[1]
 
-        days = {"weekly":7, "15days":15, "monthly":30}.get(plan)
+        days = {"weekly":7, "15days":15, "monthly":30}[plan]
 
         expire = datetime.now() + timedelta(days=days)
 
@@ -137,63 +134,53 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "expire_date": expire.isoformat()
         }).eq("user_id", uid).execute()
 
-        # remove from pending
         supabase.table("payments").delete().eq("user_id", uid).execute()
 
-        await update.message.reply_text(f"Approved {uid} → {plan}")
+        await update.message.reply_text(f"Approved {uid} ({plan})")
 
     except:
-        await update.message.reply_text("Usage: /approve user_id plan")
+        await update.message.reply_text("Usage: /approve user_id weekly")
 
-# ========= ADMIN =========
 async def total_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("users").select("*").execute()
-    await update.message.reply_text(f"Total Users: {len(data.data)}", reply_markup=admin_kb)
+    await update.message.reply_text(f"Total Users: {len(data.data)}")
 
 async def paid_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("users").select("*").neq("plan", None).execute()
-    await update.message.reply_text(f"Paid Users: {len(data.data)}", reply_markup=admin_kb)
+    await update.message.reply_text(f"Paid Users: {len(data.data)}")
 
 # ========= IP =========
+async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    data = supabase.table("users").select("*").eq("user_id", user_id).execute()
+
+    if not data.data or not data.data[0]["plan"]:
+        await update.message.reply_text("No active subscription!")
+        return
+
+    ips = supabase.table("ips").select("*").execute().data
+
+    for ip in ips:
+        usage = supabase.table("ip_usage").select("*").eq("ip", ip["ip"]).execute()
+        if len(usage.data) < 3:
+            supabase.table("ip_usage").insert({
+                "ip": ip["ip"],
+                "user_id": user_id
+            }).execute()
+
+            await update.message.reply_text(f"Your IP:\n{ip['ip']}")
+            return
+
+    await update.message.reply_text("Ip not available")
+
 async def listip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("ips").select("*").execute()
     ips = [i["ip"] for i in data.data]
     await update.message.reply_text("\n".join(ips) if ips else "No IP")
 
-async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    data = supabase.table("users").select("*").eq("user_id", user_id).execute()
-    if not data.data:
-        return
-
-    user = data.data[0]
-
-    if not user["plan"]:
-        await update.message.reply_text("No active subscription!")
-        return
-
-    if datetime.now() > datetime.fromisoformat(user["expire_date"]):
-        await update.message.reply_text("Subscription expired!")
-        return
-
-    ips = supabase.table("ips").select("*").execute().data
-
-    for ip_obj in ips:
-        usage = supabase.table("ip_usage").select("*").eq("ip", ip_obj["ip"]).execute()
-        if len(usage.data) < 3:
-            supabase.table("ip_usage").insert({
-                "ip": ip_obj["ip"],
-                "user_id": user_id
-            }).execute()
-
-            await update.message.reply_text(f"Your IP:\n{ip_obj['ip']}")
-            return
-
-    await update.message.reply_text("Ip not available right now contact your admin")
-
-# ========= HANDLER =========
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ========= BUTTON =========
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if text.startswith("📦"):
@@ -220,11 +207,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text.startswith("💰") and "Paid" in text:
         await paid_users(update, context)
 
+    elif text.startswith("📥"):
+        await pending(update, context)
+
     elif text.startswith("📜"):
         await listip(update, context)
-
-    elif text.startswith("📥"):
-        await pending_payments(update, context)
 
     else:
         await update.message.reply_text("Invalid option")
@@ -249,6 +236,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("approve", approve))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, buttons))
 
     app.run_polling()
