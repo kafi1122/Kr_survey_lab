@@ -1,5 +1,5 @@
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 import threading
 import os
@@ -7,11 +7,11 @@ from datetime import datetime, timedelta
 from supabase import create_client
 
 # ========= CONFIG =========
-BOT_TOKEN = "8770137480:AAHljo2tSbFlYX9gy7Yl5gd57oSSrUrFrVs"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 2039785960
-import os
-SUPABASE_URL = os.environ.get("rpbizbtagdkghxnbmyzs.supabase.co")
-SUPABASE_KEY = os.environ.get("sb_secret_XV4I5ynIk7TNIjB7XECv1A_zgNG_PW5")
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -42,7 +42,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         supabase.table("users").insert({
             "user_id": user.id,
-            "username": user.username
+            "username": user.username,
+            "plan": None,
+            "expire_date": None,
+            "week_start": None,
+            "ip_count": 0,
+            "current_ip": None
         }).execute()
 
         await update.message.reply_text("Registration successful!", reply_markup=user_kb)
@@ -68,7 +73,12 @@ async def paid_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========= PLAN =========
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute().data[0]
+    data = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute()
+
+    if not data.data:
+        return
+
+    user = data.data[0]
 
     if not user["plan"]:
         await update.message.reply_text("No active subscription!")
@@ -122,7 +132,11 @@ async def listip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    user = supabase.table("users").select("*").eq("user_id", user_id).execute().data[0]
+    data = supabase.table("users").select("*").eq("user_id", user_id).execute()
+    if not data.data:
+        return
+
+    user = data.data[0]
 
     if not user["plan"]:
         await update.message.reply_text("No active subscription!")
@@ -151,14 +165,12 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "week_start": now.isoformat()
         }).eq("user_id", user_id).execute()
 
-    # assign IP (max 3 users)
     ips = supabase.table("ips").select("*").execute().data
 
     selected_ip = None
 
     for ip_obj in ips:
         usage = supabase.table("ip_usage").select("*").eq("ip", ip_obj["ip"]).execute()
-
         if len(usage.data) < 3:
             selected_ip = ip_obj["ip"]
             break
@@ -174,14 +186,41 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     supabase.table("users").update({
         "current_ip": selected_ip,
-        "ip_count": user["ip_count"] + 1
+        "ip_count": (user["ip_count"] or 0) + 1
     }).eq("user_id", user_id).execute()
 
     await update.message.reply_text(f"Your IP:\n{selected_ip}")
 
-# ========= CHANGE IP =========
-async def changeip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await getip(update, context)
+# ========= BUTTON HANDLER =========
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "📦 My Plan":
+        await myplan(update, context)
+
+    elif text == "🌐 Get IP":
+        await getip(update, context)
+
+    elif text == "🔁 Change IP":
+        await getip(update, context)
+
+    elif text == "💰 Buy Plan":
+        await buy(update, context)
+
+    elif text == "🆔 My ID":
+        await myid(update, context)
+
+    elif text == "👥 Total Users":
+        await total_users(update, context)
+
+    elif text == "💰 Paid Users":
+        await paid_users(update, context)
+
+    elif text == "📜 IP List":
+        await listip(update, context)
+
+    else:
+        await update.message.reply_text("Invalid option")
 
 # ========= FLASK =========
 app_web = Flask(__name__)
@@ -201,15 +240,9 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("myid", myid))
-    app.add_handler(CommandHandler("myplan", myplan))
-    app.add_handler(CommandHandler("buy", buy))
-    app.add_handler(CommandHandler("getip", getip))
-    app.add_handler(CommandHandler("changeip", changeip))
     app.add_handler(CommandHandler("addip", addip))
     app.add_handler(CommandHandler("removeip", removeip))
-    app.add_handler(CommandHandler("listip", listip))
-    app.add_handler(CommandHandler("totalusers", total_users))
-    app.add_handler(CommandHandler("paidusers", paid_users))
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
     app.run_polling()
