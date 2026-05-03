@@ -1,293 +1,215 @@
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CallbackQueryHandler, CommandHandler
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from flask import Flask
 import threading
 import os
-import sqlite3
 from datetime import datetime, timedelta
+from supabase import create_client
 
+# ========= CONFIG =========
 BOT_TOKEN = "8770137480:AAHljo2tSbFlYX9gy7Yl5gd57oSSrUrFrVs"
 ADMIN_ID = 2039785960
+import os
+SUPABASE_URL = os.environ.get("rpbizbtagdkghxnbmyzs.supabase.co")
+SUPABASE_KEY = os.environ.get("sb_secret_XV4I5ynIk7TNIjB7XECv1A_zgNG_PW5")
 
-# ✅ PERSISTENT DB (VERY IMPORTANT)
-conn = sqlite3.connect("/data/users.db", check_same_thread=False)
-cursor = conn.cursor()
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ================= TABLE =================
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    join_date TEXT,
-    plan TEXT,
-    expire_date TEXT,
-    ip1 TEXT,
-    ip2 TEXT,
-    ip_count INTEGER DEFAULT 0
-)
-""")
+# ========= KEYBOARDS =========
+user_kb = ReplyKeyboardMarkup([
+    ["📦 My Plan", "🌐 Get IP"],
+    ["🔁 Change IP", "💰 Buy Plan"],
+    ["🆔 My ID"]
+], resize_keyboard=True)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    status TEXT
-)
-""")
+admin_kb = ReplyKeyboardMarkup([
+    ["👥 Total Users", "💰 Paid Users"],
+    ["➕ Add IP", "➖ Remove IP"],
+    ["📜 IP List"]
+], resize_keyboard=True)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS ips (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip TEXT,
-    used_count INTEGER DEFAULT 0
-)
-""")
-
-conn.commit()
-
-# ================= MENUS =================
-def user_menu():
-    return ReplyKeyboardMarkup([
-        ["📊 My Plan", "🌐 Get IP"],
-        ["🔁 Change IP"],
-        ["💰 Buy Plan", "💸 Paid"],
-        ["🆔 My ID"]
-    ], resize_keyboard=True)
-
-def admin_menu():
-    return ReplyKeyboardMarkup([
-        ["👥 Total Users", "💰 Paid Users"],
-        ["💰 Pending Payments"],
-        ["➕ Add IP", "❌ Remove IP"],
-        ["📋 IP List"]
-    ], resize_keyboard=True)
-
-# ================= START =================
+# ========= START =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
-    if not cursor.fetchone():
-        cursor.execute(
-            "INSERT INTO users (user_id, username, join_date) VALUES (?, ?, datetime('now'))",
-            (user.id, user.username)
-        )
-        conn.commit()
+    data = supabase.table("users").select("*").eq("user_id", user.id).execute()
 
-    if user.id == ADMIN_ID:
-        await update.message.reply_text("Admin Panel", reply_markup=admin_menu())
+    if data.data:
+        if user.id == ADMIN_ID:
+            await update.message.reply_text("Welcome Admin", reply_markup=admin_kb)
+        else:
+            await update.message.reply_text("Welcome back!", reply_markup=user_kb)
     else:
-        await update.message.reply_text("User Panel", reply_markup=user_menu())
+        supabase.table("users").insert({
+            "user_id": user.id,
+            "username": user.username
+        }).execute()
 
-# ================= SUB CHECK =================
-def check_sub(uid):
-    cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (uid,))
-    data = cursor.fetchone()
+        await update.message.reply_text("Registration successful!", reply_markup=user_kb)
 
-    if not data or not data[0]:
-        return False
+# ========= MY ID =========
+async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Your ID: {update.effective_user.id}")
 
-    expire = datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S")
-    return datetime.now() < expire
-
-# ================= USER =================
-async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-
-    if not check_sub(uid):
-        await update.message.reply_text("No active subscription!")
-        return
-
-    cursor.execute("SELECT plan, expire_date FROM users WHERE user_id=?", (uid,))
-    data = cursor.fetchone()
-
-    await update.message.reply_text(f"Plan: {data[0]}\nExpire: {data[1]}")
-
-# ================= IP LOGIC =================
-def get_available_ip():
-    cursor.execute("SELECT id, ip, used_count FROM ips ORDER BY used_count ASC")
-    ips = cursor.fetchall()
-
-    for ip in ips:
-        if ip[2] < 3:  # max 3 user per IP
-            return ip
-    return None
-
-async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-
-    if not check_sub(uid):
-        await update.message.reply_text("No active subscription!")
-        return
-
-    cursor.execute("SELECT ip1 FROM users WHERE user_id=?", (uid,))
-    data = cursor.fetchone()
-
-    if data and data[0]:
-        await update.message.reply_text(f"Your IP:\n{data[0]}")
-        return
-
-    ip_data = get_available_ip()
-
-    if not ip_data:
-        await update.message.reply_text("IP not available right now contact admin")
-        return
-
-    ip_id, ip, count = ip_data
-
-    cursor.execute("UPDATE ips SET used_count=? WHERE id=?", (count+1, ip_id))
-    cursor.execute("UPDATE users SET ip1=?, ip_count=1 WHERE user_id=?", (ip, uid))
-
-    conn.commit()
-
-    await update.message.reply_text(f"Your IP:\n{ip}")
-
-# ================= CHANGE IP =================
-async def change_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-
-    if not check_sub(uid):
-        await update.message.reply_text("No active subscription!")
-        return
-
-    cursor.execute("SELECT ip_count FROM users WHERE user_id=?", (uid,))
-    count = cursor.fetchone()[0]
-
-    if count >= 2:
-        await update.message.reply_text("IP change limit reached (2 per week)")
-        return
-
-    ip_data = get_available_ip()
-
-    if not ip_data:
-        await update.message.reply_text("IP not available right now contact admin")
-        return
-
-    ip_id, ip, used = ip_data
-
-    cursor.execute("UPDATE ips SET used_count=? WHERE id=?", (used+1, ip_id))
-    cursor.execute("UPDATE users SET ip2=?, ip_count=? WHERE user_id=?", (ip, count+1, uid))
-
-    conn.commit()
-
-    await update.message.reply_text(f"New IP:\n{ip}")
-
-# ================= ADMIN =================
+# ========= ADMIN =========
 async def total_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT COUNT(*) FROM users")
-    await update.message.reply_text(f"Total Users: {cursor.fetchone()[0]}")
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    data = supabase.table("users").select("*").execute()
+    await update.message.reply_text(f"Total Users: {len(data.data)}", reply_markup=admin_kb)
 
 async def paid_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT user_id, plan FROM users WHERE plan IS NOT NULL")
-    data = cursor.fetchall()
-
-    if not data:
-        await update.message.reply_text("No paid users")
+    if update.effective_user.id != ADMIN_ID:
         return
 
-    text = "\n".join([f"{u[0]} → {u[1]}" for u in data])
-    await update.message.reply_text(text)
+    data = supabase.table("users").select("*").neq("plan", None).execute()
+    await update.message.reply_text(f"Paid Users: {len(data.data)}", reply_markup=admin_kb)
 
-# ================= PAYMENTS =================
-async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    cursor.execute("INSERT INTO payments (user_id, status) VALUES (?, 'pending')", (uid,))
-    conn.commit()
-    await update.message.reply_text("Request sent to admin")
+# ========= PLAN =========
+async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute().data[0]
 
-async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT user_id FROM payments WHERE status='pending'")
-    users = cursor.fetchall()
+    if not user["plan"]:
+        await update.message.reply_text("No active subscription!")
+        return
 
-    for u in users:
-        uid = u[0]
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Approve Weekly", callback_data=f"{uid}|weekly")],
-            [InlineKeyboardButton("Approve Monthly", callback_data=f"{uid}|monthly")]
-        ])
-        await update.message.reply_text(f"{uid}", reply_markup=keyboard)
+    await update.message.reply_text(f"Plan: {user['plan']}\nExpire: {user['expire_date']}")
 
-async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+# ========= BUY =========
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("""💰 Subscription Plans:
 
-    uid, plan = q.data.split("|")
-    uid = int(uid)
+Weekly - 100৳
+15 Days - 180৳
+Monthly - 300৳
 
-    days = 7 if plan=="weekly" else 30
-    expire = datetime.now() + timedelta(days=days)
+📲 Payment: Bkash / Nagad
+Send payment & contact admin.""")
 
-    cursor.execute("UPDATE users SET plan=?, expire_date=? WHERE user_id=?",
-                   (plan, expire.strftime("%Y-%m-%d %H:%M:%S"), uid))
-    cursor.execute("UPDATE payments SET status='approved' WHERE user_id=?", (uid,))
-    conn.commit()
-
-    await context.bot.send_message(uid, f"Approved: {plan}")
-    await q.edit_message_text("Approved")
-
-# ================= IP ADMIN =================
+# ========= ADD IP =========
 async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ip = context.args[0]
-    cursor.execute("INSERT INTO ips (ip) VALUES (?)", (ip,))
-    conn.commit()
-    await update.message.reply_text("IP added")
+    if update.effective_user.id != ADMIN_ID:
+        return
 
+    try:
+        ip = context.args[0]
+        supabase.table("ips").insert({"ip": ip}).execute()
+        await update.message.reply_text(f"Added: {ip}")
+    except:
+        await update.message.reply_text("Usage: /addip ip:port")
+
+# ========= REMOVE IP =========
+async def removeip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    try:
+        ip = context.args[0]
+        supabase.table("ips").delete().eq("ip", ip).execute()
+        await update.message.reply_text(f"Removed: {ip}")
+    except:
+        await update.message.reply_text("Usage: /removeip ip")
+
+# ========= LIST IP =========
 async def listip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT ip, used_count FROM ips")
-    data = cursor.fetchall()
-    text = "\n".join([f"{i[0]} ({i[1]}/3)" for i in data])
-    await update.message.reply_text(text)
+    data = supabase.table("ips").select("*").execute()
+    ips = [i["ip"] for i in data.data]
 
-# ================= HANDLER =================
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    uid = update.effective_user.id
+    await update.message.reply_text("\n".join(ips) if ips else "No IP")
 
-    if text == "📊 My Plan":
-        await myplan(update, context)
+# ========= GET IP =========
+async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-    elif text == "🌐 Get IP":
-        await getip(update, context)
+    user = supabase.table("users").select("*").eq("user_id", user_id).execute().data[0]
 
-    elif text == "🔁 Change IP":
-        await change_ip(update, context)
+    if not user["plan"]:
+        await update.message.reply_text("No active subscription!")
+        return
 
-    elif text == "💸 Paid":
-        await paid(update, context)
+    if datetime.now() > datetime.fromisoformat(user["expire_date"]):
+        await update.message.reply_text("Subscription expired!")
+        return
 
-    elif text == "👥 Total Users":
-        await total_users(update, context)
+    now = datetime.now()
 
-    elif text == "💰 Paid Users":
-        await paid_users(update, context)
+    # weekly limit (2 IP)
+    if user["week_start"]:
+        week_start = datetime.fromisoformat(user["week_start"])
+        if now - week_start < timedelta(days=7):
+            if user["ip_count"] >= 2:
+                await update.message.reply_text("Weekly IP limit reached!")
+                return
+        else:
+            supabase.table("users").update({
+                "ip_count": 0,
+                "week_start": now.isoformat()
+            }).eq("user_id", user_id).execute()
+    else:
+        supabase.table("users").update({
+            "week_start": now.isoformat()
+        }).eq("user_id", user_id).execute()
 
-    elif text == "💰 Pending Payments":
-        await pending(update, context)
+    # assign IP (max 3 users)
+    ips = supabase.table("ips").select("*").execute().data
 
-    elif text == "📋 IP List":
-        await listip(update, context)
+    selected_ip = None
 
-# ================= FLASK =================
+    for ip_obj in ips:
+        usage = supabase.table("ip_usage").select("*").eq("ip", ip_obj["ip"]).execute()
+
+        if len(usage.data) < 3:
+            selected_ip = ip_obj["ip"]
+            break
+
+    if not selected_ip:
+        await update.message.reply_text("Ip not available right now contact your admin")
+        return
+
+    supabase.table("ip_usage").insert({
+        "ip": selected_ip,
+        "user_id": user_id
+    }).execute()
+
+    supabase.table("users").update({
+        "current_ip": selected_ip,
+        "ip_count": user["ip_count"] + 1
+    }).eq("user_id", user_id).execute()
+
+    await update.message.reply_text(f"Your IP:\n{selected_ip}")
+
+# ========= CHANGE IP =========
+async def changeip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await getip(update, context)
+
+# ========= FLASK =========
 app_web = Flask(__name__)
 
 @app_web.route('/')
 def home():
-    return "Alive"
+    return "Bot is alive!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app_web.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# ================= RUN =================
+# ========= RUN =========
 if __name__ == "__main__":
     threading.Thread(target=run_web).start()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(CommandHandler("myplan", myplan))
+    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("getip", getip))
+    app.add_handler(CommandHandler("changeip", changeip))
     app.add_handler(CommandHandler("addip", addip))
+    app.add_handler(CommandHandler("removeip", removeip))
+    app.add_handler(CommandHandler("listip", listip))
+    app.add_handler(CommandHandler("totalusers", total_users))
+    app.add_handler(CommandHandler("paidusers", paid_users))
 
-    app.add_handler(CallbackQueryHandler(approve))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-    app.run_polling(close_loop=False)
+    app.run_polling()
