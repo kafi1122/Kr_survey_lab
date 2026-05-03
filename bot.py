@@ -6,7 +6,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 
-BOT_TOKEN = "8770137480:AAHHnW_qo65bZaCyw8vAY93UdUWWVTKdT_k"
+BOT_TOKEN = "8770137480:AAHljo2tSbFlYX9gy7Yl5gd57oSSrUrFrVs"
 ADMIN_ID = 2039785960
 
 # ================= DATABASE =================
