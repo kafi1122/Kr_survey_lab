@@ -1,5 +1,5 @@
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 from flask import Flask
 import threading
 import os
@@ -15,7 +15,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ========= TEMP STATE =========
+# ========= STATE =========
 user_states = {}
 
 # ========= KEYBOARDS =========
@@ -81,20 +81,14 @@ Weekly - 100৳
 Monthly - 300৳
 
 📲 Payment: Bkash / Nagad
-Send payment & contact admin.""")
+Contact admin after payment.""")
 
 # ========= ADMIN =========
 async def total_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
     data = supabase.table("users").select("*").execute()
     await update.message.reply_text(f"Total Users: {len(data.data)}", reply_markup=admin_kb)
 
 async def paid_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
     data = supabase.table("users").select("*").neq("plan", None).execute()
     await update.message.reply_text(f"Paid Users: {len(data.data)}", reply_markup=admin_kb)
 
@@ -124,7 +118,6 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = datetime.now()
 
-    # weekly limit (2 IP)
     if user["week_start"]:
         week_start = datetime.fromisoformat(user["week_start"])
         if now - week_start < timedelta(days=7):
@@ -167,65 +160,57 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Your IP:\n{selected_ip}")
 
-# ========= BUTTON HANDLER =========
+# ========= HANDLER =========
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text.strip()
     uid = update.effective_user.id
 
-    # ===== STATE HANDLING =====
+    # ===== STATE =====
     if uid in user_states:
-        state = user_states[uid]
-
-        if state == "add_ip":
+        if user_states[uid] == "add_ip":
             supabase.table("ips").insert({"ip": text}).execute()
             await update.message.reply_text(f"IP Added: {text}", reply_markup=admin_kb)
             user_states.pop(uid)
             return
 
-        elif state == "remove_ip":
+        elif user_states[uid] == "remove_ip":
             supabase.table("ips").delete().eq("ip", text).execute()
             await update.message.reply_text(f"IP Removed: {text}", reply_markup=admin_kb)
             user_states.pop(uid)
             return
 
-    # ===== NORMAL BUTTON =====
-    if text == "📦 My Plan":
+    # ===== BUTTON MATCH =====
+    if text.startswith("📦"):
         await myplan(update, context)
 
-    elif text == "🌐 Get IP":
+    elif text.startswith("🌐"):
         await getip(update, context)
 
-    elif text == "🔁 Change IP":
+    elif text.startswith("🔁"):
         await getip(update, context)
 
-    elif text == "💰 Buy Plan":
+    elif text.startswith("💰") and "Buy" in text:
         await buy(update, context)
 
-    elif text == "🆔 My ID":
+    elif text.startswith("🆔"):
         await myid(update, context)
 
-    elif text == "👥 Total Users":
+    elif text.startswith("👥"):
         await total_users(update, context)
 
-    elif text == "💰 Paid Users":
+    elif text.startswith("💰") and "Paid" in text:
         await paid_users(update, context)
 
-    elif text == "📜 IP List":
+    elif text.startswith("📜"):
         await listip(update, context)
 
-    elif text == "➕ Add IP":
-        if uid == ADMIN_ID:
-            user_states[uid] = "add_ip"
-            await update.message.reply_text("Send IP (example: 1.1.1.1:8080)")
-        else:
-            await update.message.reply_text("Not allowed")
+    elif text.startswith("➕"):
+        user_states[uid] = "add_ip"
+        await update.message.reply_text("Send IP (example: 1.1.1.1:8080)")
 
-    elif text == "➖ Remove IP":
-        if uid == ADMIN_ID:
-            user_states[uid] = "remove_ip"
-            await update.message.reply_text("Send IP to remove")
-        else:
-            await update.message.reply_text("Not allowed")
+    elif text.startswith("➖"):
+        user_states[uid] = "remove_ip"
+        await update.message.reply_text("Send IP to remove")
 
     else:
         await update.message.reply_text("Invalid option")
