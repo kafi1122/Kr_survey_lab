@@ -58,7 +58,6 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute()
-
     user = data.data[0]
 
     if not user["plan"]:
@@ -106,12 +105,13 @@ async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No pending payments")
         return
 
-    text = "Pending:\n"
+    text = "Pending Users:\n"
     for p in data.data:
         text += f"{p['user_id']}\n"
 
-    await update.message.reply_text(text + "\nType user ID")
+    await update.message.reply_text(text)
 
+# ========= APPROVE =========
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         uid = int(context.args[0])
@@ -133,7 +133,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Approved!")
 
     except:
-        await update.message.reply_text("Usage: /approve user_id plan")
+        await update.message.reply_text("Usage: /approve user_id weekly")
 
 # ========= TERMINATE =========
 async def terminate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,7 +165,6 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = datetime.now()
 
-    # weekly limit
     if user["week_start"]:
         week = datetime.fromisoformat(user["week_start"])
         if now - week < timedelta(days=7):
@@ -201,32 +200,6 @@ async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(selected)
 
-# ========= ADD IP (FULL FORMAT) =========
-async def addip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.replace("➕ Add IP", "").strip()
-
-    if not text:
-        await update.message.reply_text("Send full IP format text")
-        return
-
-    supabase.table("ips").insert({"ip": text}).execute()
-    await update.message.reply_text("IP Added")
-
-# ========= REMOVE =========
-async def removeip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        ip = context.args[0]
-        supabase.table("ips").delete().eq("ip", ip).execute()
-        await update.message.reply_text("Removed")
-    except:
-        await update.message.reply_text("Usage: /removeip ip")
-
-# ========= LIST =========
-async def listip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = supabase.table("ips").select("*").execute()
-    text = "\n\n".join([i["ip"] for i in data.data])
-    await update.message.reply_text(text if text else "No IP")
-
 # ========= HANDLER =========
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
@@ -261,16 +234,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif t == "🔄 Refresh":
         await start(update, context)
 
-    elif t.startswith("❌ Terminate User"):
-        await update.message.reply_text("Use: /terminate user_id")
-
-    elif t.startswith("➕ Add IP"):
-        await update.message.reply_text("Paste full IP text after clicking")
-
-    else:
-        if update.effective_user.id == ADMIN_ID:
-            await update.message.reply_text("Use proper command")
-
 # ========= FLASK =========
 app_web = Flask(__name__)
 
@@ -288,9 +251,9 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("approve", approve))
     app.add_handler(CommandHandler("terminate", terminate))
-    app.add_handler(CommandHandler("removeip", removeip))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
