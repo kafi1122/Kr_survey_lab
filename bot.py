@@ -15,7 +15,6 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ========= STATE =========
 user_state = {}
 
 # ========= START =========
@@ -35,14 +34,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user.id == ADMIN_ID:
         keyboard = [
-            [InlineKeyboardButton("👥 Users", callback_data="users"),
-             InlineKeyboardButton("💰 Paid", callback_data="paid")],
-            [InlineKeyboardButton("📥 Payments", callback_data="payments")],
+            [InlineKeyboardButton("📥 Pending Payments", callback_data="payments")],
+            [InlineKeyboardButton("👥 Total Users", callback_data="users")],
             [InlineKeyboardButton("➕ Add IP", callback_data="addip"),
              InlineKeyboardButton("➖ Remove IP", callback_data="removeip")],
             [InlineKeyboardButton("📜 IP List", callback_data="iplist")]
         ]
         await update.message.reply_text("Admin Panel", reply_markup=InlineKeyboardMarkup(keyboard))
+
     else:
         keyboard = [
             [InlineKeyboardButton("📦 My Plan", callback_data="myplan"),
@@ -62,36 +61,50 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     # ===== USER =====
-    if data == "myplan":
+    if data == "paid":
+        if uid == ADMIN_ID:
+            return  # admin can't pay
+
+        # prevent duplicate pending
+        existing = supabase.table("payments").select("*").eq("user_id", uid).eq("status", "pending").execute()
+
+        if existing.data:
+            await query.message.reply_text("Already requested")
+            return
+
+        supabase.table("payments").insert({
+            "user_id": uid,
+            "status": "pending"
+        }).execute()
+
+        # send to admin with approve + reject
+        keyboard = [[
+            InlineKeyboardButton("✅ Weekly", callback_data=f"approve_{uid}_weekly"),
+            InlineKeyboardButton("✅ 15 Days", callback_data=f"approve_{uid}_15days"),
+            InlineKeyboardButton("✅ Monthly", callback_data=f"approve_{uid}_monthly")
+        ],
+        [
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}")
+        ]]
+
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"💸 Payment Request\nUser: {uid}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        await query.message.reply_text("Payment sent to admin")
+
+    elif data == "buy":
+        await query.message.reply_text("Weekly=100৳\n15days=180৳\nMonthly=300৳")
+
+    elif data == "myplan":
         user = supabase.table("users").select("*").eq("user_id", uid).execute().data[0]
 
         if not user["plan"]:
             await query.message.reply_text("No active plan")
         else:
             await query.message.reply_text(f"{user['plan']} | {user['expire_date']}")
-
-    elif data == "buy":
-        await query.message.reply_text("Weekly=100৳\n15days=180৳\nMonthly=300৳\nAfter payment press I Paid")
-
-    elif data == "paid":
-        supabase.table("payments").insert({"user_id": uid, "status": "pending"}).execute()
-
-        # send approve button to admin
-        keyboard = [
-            [
-                InlineKeyboardButton("Approve Weekly", callback_data=f"approve_{uid}_weekly"),
-                InlineKeyboardButton("Approve 15Days", callback_data=f"approve_{uid}_15days"),
-                InlineKeyboardButton("Approve Monthly", callback_data=f"approve_{uid}_monthly")
-            ]
-        ]
-
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"Payment from {uid}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-        await query.message.reply_text("Payment sent to admin")
 
     elif data == "getip":
         user = supabase.table("users").select("*").eq("user_id", uid).execute().data[0]
@@ -101,7 +114,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if user["ip_count"] >= 2:
-            await query.message.reply_text("IP limit reached")
+            await query.message.reply_text("Already full your IP quota")
             return
 
         ips = supabase.table("ips").select("*").execute().data
@@ -118,45 +131,29 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(ip["ip"])
                 return
 
-        await query.message.reply_text("No IP available")
+        await query.message.reply_text("IP not available")
 
     # ===== ADMIN =====
-    elif data == "users":
-        count = len(supabase.table("users").select("*").execute().data)
-        await query.message.reply_text(f"Users: {count}")
-
-    elif data == "paid":
-        count = len(supabase.table("users").select("*").neq("plan", None).execute().data)
-        await query.message.reply_text(f"Paid: {count}")
-
     elif data == "payments":
+        if uid != ADMIN_ID:
+            return
+
         data_p = supabase.table("payments").select("*").eq("status", "pending").execute().data
 
         if not data_p:
             await query.message.reply_text("No pending payments")
         else:
-            txt = "\n".join([str(p["user_id"]) for p in data_p])
-            await query.message.reply_text(f"Pending:\n{txt}")
+            txt = "\n".join([str(p["user_id"]) for p in data_p if p["user_id"] != ADMIN_ID])
+            await query.message.reply_text(f"Pending Users:\n{txt}")
 
-    elif data == "addip":
-        user_state[uid] = "addip"
-        await query.message.reply_text("Send IP text")
-
-    elif data == "removeip":
-        user_state[uid] = "removeip"
-        await query.message.reply_text("Send IP to remove")
-
-    elif data == "iplist":
-        ips = supabase.table("ips").select("*").execute().data
-        txt = "\n\n".join([i["ip"] for i in ips])
-        await query.message.reply_text(txt if txt else "No IP")
-
-    # ===== APPROVE =====
     elif data.startswith("approve"):
+        if uid != ADMIN_ID:
+            return
+
         _, user_id, plan = data.split("_")
 
-        days = {"weekly":7, "15days":15, "monthly":30}[plan]
-        expire = datetime.now() + timedelta(days=days)
+        days_map = {"weekly":7, "15days":15, "monthly":30}
+        expire = datetime.now() + timedelta(days=days_map[plan])
 
         supabase.table("users").update({
             "plan": plan,
@@ -170,22 +167,24 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(f"Approved {user_id}")
 
-# ========= TEXT HANDLER =========
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    text = update.message.text
+    elif data.startswith("reject"):
+        if uid != ADMIN_ID:
+            return
 
-    state = user_state.get(uid)
+        _, user_id = data.split("_")
 
-    if state == "addip":
-        supabase.table("ips").insert({"ip": text}).execute()
-        user_state.pop(uid)
-        await update.message.reply_text("IP added")
+        supabase.table("payments").update({
+            "status": "rejected"
+        }).eq("user_id", int(user_id)).execute()
 
-    elif state == "removeip":
-        supabase.table("ips").delete().eq("ip", text).execute()
-        user_state.pop(uid)
-        await update.message.reply_text("IP removed")
+        await query.message.reply_text(f"Rejected {user_id}")
+
+    elif data == "users":
+        if uid != ADMIN_ID:
+            return
+
+        count = len(supabase.table("users").select("*").execute().data)
+        await query.message.reply_text(f"Total Users: {count}")
 
 # ========= FLASK =========
 app_web = Flask(__name__)
@@ -206,6 +205,5 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     app.run_polling()
