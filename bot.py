@@ -1,12 +1,7 @@
-from telegram import (
-    Update, ReplyKeyboardMarkup,
-    InlineKeyboardMarkup, InlineKeyboardButton
-)
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask
+import threading
 import os
 from datetime import datetime, timedelta
 from supabase import create_client
@@ -20,18 +15,27 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ========= KEYBOARD =========
+# ========= FLASK =========
+app_web = Flask(__name__)
+
+@app_web.route('/')
+def home():
+    return "Bot is running!"
+
+# ========= KEYBOARDS =========
 user_kb = ReplyKeyboardMarkup([
     ["📦 My Plan", "🌐 Get IP"],
     ["🔁 Change IP", "💰 Buy Plan"],
-    ["💸 I Paid", "🆔 My ID"]
+    ["💸 I Paid", "🔄 Refresh"],
+    ["🆔 My ID"]
 ], resize_keyboard=True)
 
 admin_kb = ReplyKeyboardMarkup([
     ["👥 Total Users", "💰 Paid Users"],
     ["📥 Pending Payments"],
     ["➕ Add IP", "➖ Remove IP"],
-    ["📜 IP List"]
+    ["📜 IP List", "❌ Terminate User"],
+    ["🔄 Refresh"]
 ], resize_keyboard=True)
 
 # ========= START =========
@@ -56,27 +60,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("User Panel", reply_markup=user_kb)
 
-# ========= USER =========
-async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute().data[0]
-
-    if not user["plan"]:
-        await update.message.reply_text("No active subscription!")
-        return
-
-    await update.message.reply_text(
-        f"Plan: {user['plan']}\nExpire: {user['expire_date']}"
-    )
-
+# ========= PAYMENT =========
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""💰 Plans:
-
-Weekly - 100৳
-15 Days - 180৳
-Monthly - 300৳
-
-After payment press 💸 I Paid
-""")
+    await update.message.reply_text(
+        "💰 Plans:\n\nWeekly\n15 Days\nMonthly\n\nAfter payment click '💸 I Paid'"
+    )
 
 async def mark_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -86,90 +74,103 @@ async def mark_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "pending"
     }).execute()
 
-    await update.message.reply_text("✅ Payment submitted")
+    await update.message.reply_text("Payment sent to admin")
 
-# ========= ADMIN =========
-async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    # send approve buttons
+    await context.bot.send_message(
+        ADMIN_ID,
+        f"💸 Payment from {uid}",
+        reply_markup=ReplyKeyboardMarkup([
+            [f"✅ Approve Weekly {uid}"],
+            [f"✅ Approve 15days {uid}"],
+            [f"✅ Approve Monthly {uid}"],
+            [f"❌ Reject {uid}"]
+        ], resize_keyboard=True)
+    )
+
+# ========= APPROVE =========
+async def approve_plan(uid, plan):
+    days = {"weekly": 7, "15days": 15, "monthly": 30}[plan]
+
+    expire = datetime.now() + timedelta(days=days)
+
+    supabase.table("users").update({
+        "plan": plan,
+        "expire_date": expire.isoformat(),
+        "ip_count": 0,
+        "week_start": datetime.now().isoformat()
+    }).eq("user_id", uid).execute()
+
+    supabase.table("payments").update({
+        "status": "approved"
+    }).eq("user_id", uid).execute()
+
+# ========= IP SYSTEM =========
+async def getip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = supabase.table("users").select("*").eq("user_id", uid).execute().data[0]
+
+    if not user["plan"]:
+        await update.message.reply_text("No active subscription!")
         return
 
-    data = supabase.table("payments").select("*").eq("status", "pending").execute()
-
-    if not data.data:
-        await update.message.reply_text("No pending payments")
+    if datetime.now() > datetime.fromisoformat(user["expire_date"]):
+        await update.message.reply_text("Expired!")
         return
 
-    for p in data.data:
-        uid = p["user_id"]
+    now = datetime.now()
 
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Weekly", callback_data=f"approve|{uid}|weekly"),
-                InlineKeyboardButton("✅ 15 Days", callback_data=f"approve|{uid}|15days"),
-            ],
-            [
-                InlineKeyboardButton("✅ Monthly", callback_data=f"approve|{uid}|monthly"),
-            ],
-            [
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject|{uid}")
-            ]
-        ])
+    # weekly limit
+    if user["week_start"]:
+        week = datetime.fromisoformat(user["week_start"])
+        if now - week < timedelta(days=7):
+            if user["ip_count"] >= 2:
+                await update.message.reply_text("Already full your Ip quota")
+                return
+        else:
+            supabase.table("users").update({
+                "ip_count": 0,
+                "week_start": now.isoformat()
+            }).eq("user_id", uid).execute()
 
-        await update.message.reply_text(
-            f"💳 Payment from User:\nID: {uid}",
-            reply_markup=keyboard
-        )
+    ips = supabase.table("ips").select("*").execute().data
 
-# ========= CALLBACK =========
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    selected = None
+    for ip in ips:
+        usage = supabase.table("ip_usage").select("*").eq("ip", ip["ip"]).execute()
+        if len(usage.data) < 3:
+            selected = ip["ip"]
+            break
 
-    data = query.data.split("|")
+    if not selected:
+        await update.message.reply_text("Ip not available right now contact admin")
+        return
 
-    action = data[0]
-    uid = int(data[1])
+    supabase.table("ip_usage").insert({"ip": selected, "user_id": uid}).execute()
 
-    if action == "approve":
-        plan = data[2]
+    supabase.table("users").update({
+        "current_ip": selected,
+        "ip_count": (user["ip_count"] or 0) + 1
+    }).eq("user_id", uid).execute()
 
-        days = {
-            "weekly": 7,
-            "15days": 15,
-            "monthly": 30
-        }[plan]
+    await update.message.reply_text(selected)
 
-        expire = datetime.now() + timedelta(days=days)
-
-        supabase.table("users").update({
-            "plan": plan,
-            "expire_date": expire.isoformat(),
-            "ip_count": 0,
-            "week_start": datetime.now().isoformat()
-        }).eq("user_id", uid).execute()
-
-        supabase.table("payments").update({
-            "status": "approved"
-        }).eq("user_id", uid).execute()
-
-        await query.edit_message_text(f"✅ Approved {plan} for {uid}")
-
-    elif action == "reject":
-        supabase.table("payments").update({
-            "status": "rejected"
-        }).eq("user_id", uid).execute()
-
-        await query.edit_message_text(f"❌ Rejected payment for {uid}")
-
-# ========= HANDLER =========
+# ========= HANDLE =========
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
+    # USER
     if text == "📦 My Plan":
-        await myplan(update, context)
+        data = supabase.table("users").select("*").eq("user_id", update.effective_user.id).execute()
+        user = data.data[0]
+
+        if not user["plan"]:
+            await update.message.reply_text("No active subscription!")
+        else:
+            await update.message.reply_text(f"{user['plan']} until {user['expire_date']}")
 
     elif text in ["🌐 Get IP", "🔁 Change IP"]:
-        await update.message.reply_text("IP system working...")
+        await getip(update, context)
 
     elif text == "💰 Buy Plan":
         await buy(update, context)
@@ -180,27 +181,85 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🆔 My ID":
         await update.message.reply_text(str(update.effective_user.id))
 
-    elif text == "📥 Pending Payments":
-        await pending(update, context)
+    elif text == "🔄 Refresh":
+        await start(update, context)
+
+    # ADMIN
+    elif text.startswith("✅ Approve"):
+        parts = text.split()
+        plan = parts[2].lower()
+        uid = int(parts[3])
+
+        await approve_plan(uid, plan)
+        await update.message.reply_text("Approved!")
+
+    elif text.startswith("❌ Reject"):
+        uid = int(text.split()[2])
+
+        supabase.table("payments").update({
+            "status": "rejected"
+        }).eq("user_id", uid).execute()
+
+        await update.message.reply_text("Rejected")
 
     elif text == "👥 Total Users":
         data = supabase.table("users").select("*").execute()
-        await update.message.reply_text(f"Total Users: {len(data.data)}")
+        await update.message.reply_text(f"Total: {len(data.data)}")
 
     elif text == "💰 Paid Users":
         data = supabase.table("users").select("*").neq("plan", None).execute()
-        await update.message.reply_text(f"Paid Users: {len(data.data)}")
+        await update.message.reply_text(f"Paid: {len(data.data)}")
+
+    elif text == "📜 IP List":
+        data = supabase.table("ips").select("*").execute()
+        txt = "\n\n".join([i["ip"] for i in data.data])
+        await update.message.reply_text(txt or "No IP")
+
+    elif text == "➕ Add IP":
+        context.user_data["add_ip"] = True
+        await update.message.reply_text("Send IP text")
+
+    elif context.user_data.get("add_ip"):
+        supabase.table("ips").insert({"ip": text}).execute()
+        context.user_data["add_ip"] = False
+        await update.message.reply_text("IP Added")
+
+    elif text == "➖ Remove IP":
+        context.user_data["remove_ip"] = True
+        await update.message.reply_text("Send IP to remove")
+
+    elif context.user_data.get("remove_ip"):
+        supabase.table("ips").delete().eq("ip", text).execute()
+        context.user_data["remove_ip"] = False
+        await update.message.reply_text("Removed")
+
+    elif text == "❌ Terminate User":
+        await update.message.reply_text("Send user ID")
 
     else:
-        await update.message.reply_text("Use menu buttons")
+        try:
+            uid = int(text)
+            supabase.table("users").update({
+                "plan": None,
+                "expire_date": None
+            }).eq("user_id", uid).execute()
 
-# ========= RUN =========
-if __name__ == "__main__":
+            await update.message.reply_text("User terminated")
+        except:
+            await update.message.reply_text("Invalid input")
+
+# ========= BOT THREAD =========
+def run_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.add_handler(CallbackQueryHandler(callback_handler))
 
-    print("Bot running...")
     app.run_polling()
+
+# ========= MAIN =========
+if __name__ == "__main__":
+    threading.Thread(target=run_bot).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
